@@ -1,3 +1,6 @@
+# Xero Client ID 86F233D613AF4B7EB6C25183035350F3
+# URI http://localhost:8000/callback
+# Secret vcIMN3DMASE5omjr3H1SG0fqyypDIHeXHSEKxCAK9x5XI7dd
 
 
 # C:\Users\jesus.ordonez\AppData\Local\Programs\Python\Python310\Scripts\pip3 install pandasgui
