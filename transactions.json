@@ -1,0 +1,45 @@
+[
+    {
+        "BankTransactionID": "0501894b-95c8-4395-ad4b-1f5093752b1d",
+        "BankAccount": {
+            "AccountID": "333851e3-cad0-4bf8-815b-60481b484e0f",
+            "Name": "Cash in Hand"
+        },
+        "Type": "RECEIVE",
+        "Reference": "Offset to balance to 14731.45",
+        "IsReconciled": false,
+        "HasAttachments": false,
+        "Contact": {
+            "ContactID": "e82cec42-7a37-4e1a-ba08-d3c7a0d344f5",
+            "Name": "OffSet",
+            "Addresses": [],
+            "Phones": [],
+            "ContactGroups": [],
+            "ContactPersons": [],
+            "HasValidationErrors": false
+        },
+        "DateString": "2016-02-22T00:00:00",
+        "Date": "/Date(1456099200000+0000)/",
+        "Status": "AUTHORISED",
+        "LineAmountTypes": "Exclusive",
+        "LineItems": [
+            {
+                "Description": "Offset to balance to 14731.34",
+                "UnitAmount": 237968.89,
+                "TaxType": "OUTPUT",
+                "TaxAmount": 0.0,
+                "LineAmount": 237968.89,
+                "AccountCode": "260",
+                "Tracking": [],
+                "Quantity": 1.0,
+                "LineItemID": "e5c81465-c50f-4c55-806f-087cc345be93",
+                "AccountID": "0e78d868-91b8-4fdb-aaa7-8d486d570980"
+            }
+        ],
+        "SubTotal": 237968.89,
+        "TotalTax": 0.0,
+        "Total": 237968.89,
+        "UpdatedDateUTC": "/Date(1456196678567+0000)/",
+        "CurrencyCode": "PHP"
+    }
+]
