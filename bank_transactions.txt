@@ -1,2 +1,0 @@
-Date|Contact|Reference|Total|Type|Status
-/Date(1456099200000+0000)/|OffSet|Offset to balance to 14731.45|237968.89|RECEIVE|AUTHORISED

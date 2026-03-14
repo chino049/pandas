@@ -10,6 +10,7 @@ import socketserver
 import base64
 import json
 import time
+from datetime import datetime
 
 # -----------------------------
 # Xero Credentials (do not expose)
@@ -90,7 +91,6 @@ def refresh_token(tokens):
     if "expires_in" in new_tokens:
         new_tokens["expires_at"] = time.time() + new_tokens["expires_in"]
     else:
-        print("Warning: expires_in not returned, using 29 minutes as fallback")
         new_tokens["expires_at"] = time.time() + 29*60
 
     with open(TOKEN_FILE, "w") as f:
@@ -105,7 +105,7 @@ def get_valid_token():
     return tokens["access_token"]
 
 # -----------------------------
-# Safe request with retries and token refresh
+# Safe request with retries
 # -----------------------------
 def safe_request(url, tenant_id, page=1, method="GET", data=None):
     for attempt in range(5):
@@ -126,7 +126,6 @@ def safe_request(url, tenant_id, page=1, method="GET", data=None):
                 return response.json()
             except Exception as e:
                 print(f"JSON decode failed on page {page}: {e}")
-                print("Response text:", response.text)
                 time.sleep(2)
                 continue
         elif response.status_code == 401:
@@ -156,13 +155,25 @@ def get_tenant_id(access_token):
     return tenant_id
 
 # -----------------------------
-# Export invoices (Sales or Purchase)
+# Helper: format date
+# -----------------------------
+def format_xero_date(date_str):
+    if not date_str:
+        return ""
+    try:
+        return datetime.strptime(date_str[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+    except:
+        return date_str
+
+# -----------------------------
+# Export invoices
 # -----------------------------
 def export_invoices_to_text(tenant_id, invoice_type, filename, type_label):
     page = 1
     rows = []
+    total_count = 0
     while True:
-        url = f'https://api.xero.com/api.xro/2.0/Invoices?page={page}&where=Type=="{invoice_type}"'
+        url = f"https://api.xero.com/api.xro/2.0/Invoices?page={page}&where=Type==\"{invoice_type}\""
         data = safe_request(url, tenant_id, page)
         if not data:
             break
@@ -174,7 +185,7 @@ def export_invoices_to_text(tenant_id, invoice_type, filename, type_label):
             for line in inv.get("LineItems", []):
                 rows.append([
                     inv.get("InvoiceNumber"),
-                    inv.get("Date"),
+                    format_xero_date(inv.get("Date")),
                     contact,
                     line.get("Description"),
                     line.get("AccountCode"),
@@ -182,88 +193,27 @@ def export_invoices_to_text(tenant_id, invoice_type, filename, type_label):
                     line.get("UnitAmount"),
                     line.get("LineAmount"),
                     inv.get("Total"),
-                    inv.get("Status"),
-                    type_label
+                    inv.get("Status")
                 ])
-        print(f"Fetched {type_label} page {page}")
+        total_count += len(invoices)
+        print(f"Fetched {type_label} page {page} ({len(invoices)} invoices)")
         page += 1
         time.sleep(0.5)
 
     with open(filename, "w", encoding="utf-8") as f:
-        header = ["InvoiceNumber","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+        header = ["InvoiceNumber","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","InvoiceTotal","Status"]
         f.write("|".join(header) + "\n")
         for r in rows:
-            r = [str(x) if x else "" for x in r]
-            f.write("|".join(r) + "\n")
-    print(f"{type_label} exported to {filename}")
-    return rows
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+    print(f"{type_label} exported to {filename} ({total_count} total invoices)")
 
 # -----------------------------
-# Export Expense Claims (Paid)
-# -----------------------------
-def export_expense_claims(tenant_id, filename="JOP_paid_expense_claims.txt"):
-    page = 1
-    rows = []
-    while True:
-        url = f"https://api.xero.com/api.xro/2.0/ExpenseClaims?page={page}&where=Status==\"PAID\""
-        data = safe_request(url, tenant_id, page)
-        if not data:
-            break
-        claims = data.get("ExpenseClaims", [])
-        if not claims:
-            break
-        for claim in claims:
-            contact = claim.get("Employee", {}).get("FullName", "")
-            for line in claim.get("LineItems", []):
-                rows.append([
-                    claim.get("ExpenseClaimID"),
-                    claim.get("Date"),
-                    contact,
-                    line.get("Description"),
-                    line.get("AccountCode"),
-                    line.get("Quantity"),
-                    line.get("UnitAmount"),
-                    line.get("LineAmount"),
-                    claim.get("Total"),
-                    claim.get("Status"),
-                    "ExpenseClaim"
-                ])
-        print(f"Fetched ExpenseClaims page {page}")
-        page += 1
-        time.sleep(0.5)
-
-    with open(filename, "w", encoding="utf-8") as f:
-        header = ["ID","Date","Employee","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
-        f.write("|".join(header) + "\n")
-        for r in rows:
-            r = [str(x) if x else "" for x in r]
-            f.write("|".join(r) + "\n")
-    print(f"All paid expense claims exported to {filename}")
-    return rows
-
-# -----------------------------
-# Export combined paid invoices + expense claims
-# -----------------------------
-def export_all_paid_invoices_combined(tenant_id, filename="JOP_all_paid_invoices.txt"):
-    sales = export_invoices_to_text(tenant_id, "ACCREC", "JOP_paid_sales.txt", "Sale")
-    expenses = export_invoices_to_text(tenant_id, "ACCPAY", "JOP_paid_expenses.txt", "Expense")
-    expense_claims = export_expense_claims(tenant_id)
-    all_rows = sales + expenses + expense_claims
-
-    with open(filename, "w", encoding="utf-8") as f:
-        header = ["InvoiceNumber/ID","Date","Contact/Employee","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
-        f.write("|".join(header) + "\n")
-        for r in all_rows:
-            r = [str(x) if x else "" for x in r]
-            f.write("|".join(r) + "\n")
-    print(f"All paid sales, expenses, and expense claims exported to {filename}")
-
-# -----------------------------
-# Other exports (payments, accounts, contacts, bank transactions, tracking categories)
+# Export payments
 # -----------------------------
 def export_payments(tenant_id):
     page = 1
     rows = []
+    total_count = 0
     while True:
         url = f"https://api.xero.com/api.xro/2.0/Payments?page={page}"
         data = safe_request(url, tenant_id, page)
@@ -274,18 +224,22 @@ def export_payments(tenant_id):
             break
         for p in payments:
             contact = p.get("Invoice", {}).get("Contact", {}).get("Name", "")
-            rows.append([p.get("Date"), contact, p.get("Amount"), p.get("Reference")])
-        print(f"Fetched payments page {page}")
+            rows.append([format_xero_date(p.get("Date")), contact, p.get("Amount"), p.get("Reference")])
+        total_count += len(payments)
+        print(f"Fetched payments page {page} ({len(payments)} payments)")
         page += 1
         time.sleep(0.5)
+
     with open("JOP_payments.txt", "w", encoding="utf-8") as f:
         header = ["Date","Contact","Amount","Reference"]
         f.write("|".join(header) + "\n")
         for r in rows:
-            r = [str(x) if x else "" for x in r]
-            f.write("|".join(r) + "\n")
-    print("Payments exported to JOP_payments.txt")
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+    print(f"Payments exported to JOP_payments.txt ({total_count} total)")
 
+# -----------------------------
+# Export accounts
+# -----------------------------
 def export_accounts(tenant_id):
     url = "https://api.xero.com/api.xro/2.0/Accounts"
     data = safe_request(url, tenant_id)
@@ -297,13 +251,16 @@ def export_accounts(tenant_id):
         f.write("|".join(header) + "\n")
         for a in accounts:
             row = [a.get("Code"), a.get("Name"), a.get("Type"), a.get("Class"), a.get("Status"), a.get("Description")]
-            row = [str(x) if x else "" for x in row]
-            f.write("|".join(row) + "\n")
-    print("Accounts exported to JOP_accounts.txt")
+            f.write("|".join([str(x) if x else "" for x in row]) + "\n")
+    print(f"Accounts exported to JOP_accounts.txt ({len(accounts)} total)")
 
+# -----------------------------
+# Export contacts
+# -----------------------------
 def export_contacts(tenant_id):
     page = 1
     rows = []
+    total_count = 0
     while True:
         url = f"https://api.xero.com/api.xro/2.0/Contacts?page={page}"
         data = safe_request(url, tenant_id, page)
@@ -314,20 +271,25 @@ def export_contacts(tenant_id):
             break
         for c in contacts:
             rows.append([c.get("Name"), c.get("EmailAddress"), c.get("ContactStatus"), c.get("DefaultCurrency")])
-        print(f"Fetched contacts page {page}")
+        total_count += len(contacts)
+        print(f"Fetched contacts page {page} ({len(contacts)} contacts)")
         page += 1
         time.sleep(0.5)
+
     with open("JOP_contacts.txt", "w", encoding="utf-8") as f:
         header = ["Name","Email","Status","Currency"]
         f.write("|".join(header) + "\n")
         for r in rows:
-            r = [str(x) if x else "" for x in r]
-            f.write("|".join(r) + "\n")
-    print("Contacts exported to JOP_contacts.txt")
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+    print(f"Contacts exported to JOP_contacts.txt ({total_count} total)")
 
+# -----------------------------
+# Export bank transactions
+# -----------------------------
 def export_bank_transactions(tenant_id):
     page = 1
     rows = []
+    total_count = 0
     while True:
         url = f"https://api.xero.com/api.xro/2.0/BankTransactions?page={page}"
         data = safe_request(url, tenant_id, page)
@@ -338,33 +300,415 @@ def export_bank_transactions(tenant_id):
             break
         for t in transactions:
             contact = t.get("Contact", {}).get("Name", "")
-            rows.append([t.get("Date"), contact, t.get("Reference"), t.get("Total"), t.get("Type"), t.get("Status")])
-        print(f"Fetched bank transactions page {page}")
+            rows.append([format_xero_date(t.get("Date")), contact, t.get("Reference"), t.get("Total"), t.get("Type"), t.get("Status")])
+        total_count += len(transactions)
+        print(f"Fetched bank transactions page {page} ({len(transactions)} transactions)")
         page += 1
         time.sleep(0.5)
+
     with open("JOP_bank_transactions.txt", "w", encoding="utf-8") as f:
         header = ["Date","Contact","Reference","Total","Type","Status"]
         f.write("|".join(header) + "\n")
         for r in rows:
-            r = [str(x) if x else "" for x in r]
-            f.write("|".join(r) + "\n")
-    print("Bank transactions exported to JOP_bank_transactions.txt")
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+    print(f"Bank transactions exported to JOP_bank_transactions.txt ({total_count} total)")
 
+# -----------------------------
+# Export tracking categories
+# -----------------------------
 def export_tracking_categories(tenant_id):
     url = "https://api.xero.com/api.xro/2.0/TrackingCategories"
     data = safe_request(url, tenant_id)
     if not data:
         return
     categories = data.get("TrackingCategories", [])
+    rows = []
+    for cat in categories:
+        for option in cat.get("Options", []):
+            rows.append([cat.get("Name"), option.get("Name")])
+
     with open("JOP_tracking_categories.txt", "w", encoding="utf-8") as f:
         header = ["Category","Option"]
         f.write("|".join(header) + "\n")
-        for cat in categories:
-            for option in cat.get("Options", []):
-                row = [cat.get("Name"), option.get("Name")]
-                row = [str(x) if x else "" for x in row]
-                f.write("|".join(row) + "\n")
-    print("Tracking categories exported to JOP_tracking_categories.txt")
+        for r in rows:
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+    print(f"Tracking categories exported to JOP_tracking_categories.txt ({len(rows)} total)")
+
+# -----------------------------
+# Paid invoices
+# -----------------------------
+def export_paid_invoices(tenant_id, invoice_type, filename, type_label):
+    page = 1
+    rows = []
+    total_count = 0
+    while True:
+        url = f'https://api.xero.com/api.xro/2.0/Invoices?page={page}&where=Type=="{invoice_type}" && Status=="PAID"'
+        data = safe_request(url, tenant_id, page)
+        if not data:
+            break
+        invoices = data.get("Invoices", [])
+        if not invoices:
+            break
+        for inv in invoices:
+            contact = inv.get("Contact", {}).get("Name", "")
+            for line in inv.get("LineItems", []):
+                rows.append([
+                    inv.get("InvoiceNumber"),
+                    format_xero_date(inv.get("Date")),
+                    contact,
+                    line.get("Description"),
+                    line.get("AccountCode"),
+                    line.get("Quantity"),
+                    line.get("UnitAmount"),
+                    line.get("LineAmount"),
+                    inv.get("Total"),
+                    inv.get("Status"),
+                    type_label
+                ])
+        total_count += len(invoices)
+        print(f"Fetched {type_label} page {page} ({len(invoices)} invoices)")
+        page += 1
+        time.sleep(0.5)
+
+    with open(filename, "w", encoding="utf-8") as f:
+        header = ["InvoiceNumber","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+        f.write("|".join(header) + "\n")
+        for r in rows:
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+    print(f"{type_label} exported to {filename} ({total_count} total invoices)")
+    return rows
+
+# -----------------------------
+# Paid expense claims (with pagination)
+# -----------------------------
+# def export_paid_expense_claims(tenant_id, filename="JOP_paid_expense_claims.txt"):
+#     page = 1
+#     rows = []
+#     total_count = 0
+
+#     while True:
+#         url = f'https://api.xero.com/api.xro/2.0/ExpenseClaims?page={page}&where=Status=="PAID"'
+#         data = safe_request(url, tenant_id, page)
+#         if not data:
+#             break
+#         claims = data.get("ExpenseClaims", [])
+#         if not claims:
+#             break
+#         for claim in claims:
+#             contact = claim.get("Contact", {}).get("Name", "")
+#             for line in claim.get("LineItems", []):
+#                 rows.append([
+#                     claim.get("ExpenseClaimID"),
+#                     format_xero_date(claim.get("Date")),
+#                     contact,
+#                     line.get("Description"),
+#                     line.get("AccountCode"),
+#                     line.get("Quantity"),
+#                     line.get("UnitAmount"),
+#                     line.get("LineAmount"),
+#                     claim.get("Total"),
+#                     claim.get("Status"),
+#                     "ExpenseClaim"
+#                 ])
+#         total_count += len(claims)
+#         print(f"Fetched ExpenseClaims page {page} ({len(claims)} claims)")
+#         page += 1
+#         time.sleep(0.5)
+
+#     with open(filename, "w", encoding="utf-8") as f:
+#         header = ["ID","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+#         f.write("|".join(header) + "\n")
+#         for r in rows:
+#             f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+    
+#     print(f"All paid expense claims exported to {filename} ({total_count} total claims)")
+#     return rows
+
+# def export_paid_expense_claims(tenant_id, filename="JOP_paid_expense_claims.txt"):
+#     rows = []
+#     total_count = 0
+#     page = 1
+#     page_size = 100  # Xero default max per page is 100
+
+#     while True:
+#         url = f"https://api.xero.com/api.xro/2.0/ExpenseClaims?page={page}&pageSize={page_size}&where=Status==\"PAID\""
+#         data = safe_request(url, tenant_id, page)
+#         if not data:
+#             break
+
+#         claims = data.get("ExpenseClaims", [])
+#         if not claims:
+#             break  # No more claims, stop pagination
+
+#         for claim in claims:
+#             contact = claim.get("Contact", {}).get("Name", "")
+#             for line in claim.get("LineItems", []):
+#                 rows.append([
+#                     claim.get("ExpenseClaimID"),
+#                     format_xero_date(claim.get("Date")),
+#                     contact,
+#                     line.get("Description"),
+#                     line.get("AccountCode"),
+#                     line.get("Quantity"),
+#                     line.get("UnitAmount"),
+#                     line.get("LineAmount"),
+#                     claim.get("Total"),
+#                     claim.get("Status"),
+#                     "ExpenseClaim"
+#                 ])
+
+#         total_count += len(claims)
+#         print(f"Fetched ExpenseClaims page {page} ({len(claims)} claims, cumulative {total_count})")
+#         page += 1
+#         time.sleep(0.5)  # be polite with API rate limits
+
+#     with open(filename, "w", encoding="utf-8") as f:
+#         header = ["ID","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+#         f.write("|".join(header) + "\n")
+#         for r in rows:
+#             f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+
+#     print(f"All paid expense claims exported to {filename} ({total_count} total claims)")
+#     return rows
+
+# def export_paid_expense_claims(tenant_id, filename="JOP_paid_expense_claims.txt"):
+#     rows = []
+#     total_count = 0
+#     page = 1
+#     page_size = 100  # max allowed by Xero API
+
+#     while True:
+#         url = f"https://api.xero.com/api.xro/2.0/ExpenseClaims?page={page}&pageSize={page_size}&where=Status==\"PAID\""
+#         data = safe_request(url, tenant_id, page)
+#         if not data:
+#             break
+
+#         claims = data.get("ExpenseClaims", [])
+#         if not claims:
+#             break
+
+#         # Add each claim's line items
+#         for claim in claims:
+#             contact = claim.get("Contact", {}).get("Name", "")
+#             for line in claim.get("LineItems", []):
+#                 rows.append([
+#                     claim.get("ExpenseClaimID"),
+#                     format_xero_date(claim.get("Date")),
+#                     contact,
+#                     line.get("Description"),
+#                     line.get("AccountCode"),
+#                     line.get("Quantity"),
+#                     line.get("UnitAmount"),
+#                     line.get("LineAmount"),
+#                     claim.get("Total"),
+#                     claim.get("Status"),
+#                     "ExpenseClaim"
+#                 ])
+
+#         total_count += len(claims)
+#         print(f"Fetched ExpenseClaims page {page} ({len(claims)} claims, cumulative {total_count})")
+
+#         # Stop if last page returned less than page_size
+#         if len(claims) < page_size:
+#             break
+
+#         page += 1
+#         time.sleep(0.5)
+
+#     with open(filename, "w", encoding="utf-8") as f:
+#         header = ["ID","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+#         f.write("|".join(header) + "\n")
+#         for r in rows:
+#             f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+
+#     print(f"All paid expense claims exported to {filename} ({total_count} total claims)")
+#     return rows
+
+def export_paid_expense_claims_by_date(tenant_id, start_date, end_date, filename="JOP_paid_expense_claims.txt"):
+    rows = []
+    total_count = 0
+    current_start = start_date
+
+    while True:
+        url = (
+            f"https://api.xero.com/api.xro/2.0/ExpenseClaims"
+            f"?where=Status==\"PAID\" && Date>=DateTime({current_start}) && Date<=DateTime({end_date})"
+            f"&pageSize=100"
+        )
+        data = safe_request(url, tenant_id, page=1)
+        if not data:
+            break
+
+        claims = data.get("ExpenseClaims", [])
+        if not claims:
+            break
+
+        for claim in claims:
+            contact = claim.get("Contact", {}).get("Name", "")
+            for line in claim.get("LineItems", []):
+                rows.append([
+                    claim.get("ExpenseClaimID"),
+                    format_xero_date(claim.get("Date")),
+                    contact,
+                    line.get("Description"),
+                    line.get("AccountCode"),
+                    line.get("Quantity"),
+                    line.get("UnitAmount"),
+                    line.get("LineAmount"),
+                    claim.get("Total"),
+                    claim.get("Status"),
+                    "ExpenseClaim"
+                ])
+        total_count += len(claims)
+        print(f"Fetched {len(claims)} claims from {current_start} to {end_date} (cumulative {total_count})")
+
+        last_date = claims[-1].get("Date")
+        if not last_date or last_date >= end_date:
+            break
+        current_start = last_date[:10]  # next day after last fetched
+        time.sleep(0.5)
+
+    # Write to file
+    with open(filename, "w", encoding="utf-8") as f:
+        header = ["ID","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+        f.write("|".join(header) + "\n")
+        for r in rows:
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+
+    print(f"All paid expense claims exported to {filename} ({total_count} total claims)")
+
+    # ✅ Return the rows so caller knows how many were exported
+    return rows
+
+# def export_paid_expense_claims_by_date(tenant_id, start_date, end_date, filename="JOP_paid_expense_claims.txt"):
+#     rows = []
+#     total_count = 0
+#     current_start = start_date
+
+#     while True:
+#         url = (
+#             f"https://api.xero.com/api.xro/2.0/ExpenseClaims"
+#             f"?where=Status==\"PAID\" && Date>=DateTime({current_start}) && Date<=DateTime({end_date})"
+#             f"&pageSize=100"
+#         )
+#         data = safe_request(url, tenant_id, page=1)
+#         if not data:
+#             break
+
+#         claims = data.get("ExpenseClaims", [])
+#         if not claims:
+#             break
+
+#         for claim in claims:
+#             contact = claim.get("Contact", {}).get("Name", "")
+#             for line in claim.get("LineItems", []):
+#                 rows.append([
+#                     claim.get("ExpenseClaimID"),
+#                     format_xero_date(claim.get("Date")),
+#                     contact,
+#                     line.get("Description"),
+#                     line.get("AccountCode"),
+#                     line.get("Quantity"),
+#                     line.get("UnitAmount"),
+#                     line.get("LineAmount"),
+#                     claim.get("Total"),
+#                     claim.get("Status"),
+#                     "ExpenseClaim"
+#                 ])
+#         total_count += len(claims)
+#         print(f"Fetched {len(claims)} claims from {current_start} to {end_date} (cumulative {total_count})")
+
+#         # Move start date forward to last claim fetched + 1 day
+#         last_date = claims[-1].get("Date")
+#         if not last_date or last_date >= end_date:
+#             break
+#         current_start = last_date[:10]  # next day after last fetched
+#         time.sleep(0.5)
+
+#     with open(filename, "w", encoding="utf-8") as f:
+#         header = ["ID","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+#         f.write("|".join(header) + "\n")
+#         for r in rows:
+#             f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+
+#     print(f"All paid expense claims exported to {filename} ({total_count} total claims)")
+#     return rows
+
+# -----------------------------
+# Combine all paid invoices + expense claims
+# -----------------------------
+# def export_all_paid_invoices_combined(tenant_id, filename="JOP_all_paid_invoices.txt"):
+#     sales = export_paid_invoices(tenant_id, "ACCREC", "JOP_paid_sales.txt", "Sale")
+#     expenses = export_paid_invoices(tenant_id, "ACCPAY", "JOP_paid_expenses.txt", "Expense")
+#     expense_claims = export_paid_expense_claims(tenant_id, "JOP_paid_expense_claims.txt")
+#     all_rows = sales + expenses + expense_claims
+
+#     with open(filename, "w", encoding="utf-8") as f:
+#         header = ["InvoiceNumber/ID","Date","Contact","Description","AccountCode","Quantity","UnitAmount","LineAmount","Total","Status","Type"]
+#         f.write("|".join(header) + "\n")
+#         for r in all_rows:
+#             f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+#     print(f"All paid sales, invoices, and expense claims exported to {filename} ({len(all_rows)} total records)")
+
+def export_all_paid_invoices_combined(
+    tenant_id,
+    start_date="2010-01-01",
+    end_date="2030-12-31",
+    filename="JOP_all_paid_invoices.txt"
+    ):
+    # -----------------------------
+    # 1️⃣ Paid sales invoices (ACCREC)
+    # -----------------------------
+    print("Exporting all paid sales invoices...")
+    sales = export_paid_invoices(tenant_id, "ACCREC", "JOP_paid_sales.txt", "Sale")
+    print(f"Total sales invoices exported: {len(sales)}\n")
+
+    # -----------------------------
+    # 2️⃣ Paid supplier invoices (ACCPAY)
+    # -----------------------------
+    print("Exporting all paid supplier invoices (expenses)...")
+    expenses = export_paid_invoices(tenant_id, "ACCPAY", "JOP_paid_expenses.txt", "Expense")
+    print(f"Total expense invoices exported: {len(expenses)}\n")
+
+    # -----------------------------
+    # 3️⃣ Paid expense claims
+    # -----------------------------
+    print("Exporting all paid expense claims...")
+    expense_claims = export_paid_expense_claims_by_date(
+        tenant_id,
+        start_date=start_date,
+        end_date=end_date,
+        filename="JOP_paid_expense_claims.txt"
+    )
+    print(f"Total expense claims exported: {len(expense_claims)}\n")
+
+    # -----------------------------
+    # 4️⃣ Combine all records
+    # -----------------------------
+    all_rows = sales + expenses + expense_claims
+    print(f"Writing combined file with {len(all_rows)} total records...")
+
+    with open(filename, "w", encoding="utf-8") as f:
+        header = [
+            "InvoiceNumber/ID",
+            "Date",
+            "Contact",
+            "Description",
+            "AccountCode",
+            "Quantity",
+            "UnitAmount",
+            "LineAmount",
+            "Total",
+            "Status",
+            "Type"
+        ]
+        f.write("|".join(header) + "\n")
+        for r in all_rows:
+            f.write("|".join([str(x) if x else "" for x in r]) + "\n")
+
+    print(f"All paid sales, invoices, and expense claims exported to {filename} ({len(all_rows)} total records)")
+
+    return all_rows
 
 # -----------------------------
 # Main
@@ -388,7 +732,7 @@ def main():
     export_bank_transactions(tenant_id)
     export_tracking_categories(tenant_id)
 
-    # All paid invoices + expense claims combined
+    # Paid invoices + expense claims
     export_all_paid_invoices_combined(tenant_id)
 
 if __name__ == "__main__":
